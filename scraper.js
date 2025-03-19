@@ -1,91 +1,63 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 
-const BASE_URL = 'https://hiring.idenhq.com/challenge'; // Replace with actual application URL
-const USERNAME = 'your-username';
-const PASSWORD = 'your-password';
-const SESSION_STORAGE_FILE = 'session.json';
-const OUTPUT_FILE = 'products.json';
+const SESSION_FILE = 'session.json';
+const EMAIL = 'tisha.prakash@cmr.edu.in';
+const PASSWORD = 'BQ9VVGUC';
+const BASE_URL = 'https://hiring.idenhq.com';
 
 (async () => {
-    let browser;
-    try {
-        browser = await chromium.launch({
-            executablePath: "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", // Change this if needed
-            headless: false
-        });
-    } catch (error) {
-        console.log("Chrome not found, using Playwright's default Chromium.");
-        browser = await chromium.launch({ headless: false });
-    }
+    const browser = await chromium.launch({ headless: false });
+    let context;
 
-    const context = await browser.newContext();
+    if (fs.existsSync(SESSION_FILE)) {
+        console.log("✅ Using existing session.");
+        context = await browser.newContext({ storageState: SESSION_FILE });
+    } else {
+        console.log("🔐 No session found. Logging in...");
+        context = await browser.newContext();
+        const page = await context.newPage();
+        await page.goto(`${BASE_URL}/login`);
 
-    // Load session storage if it exists
-    if (fs.existsSync(SESSION_STORAGE_FILE)) {
-        const storageState = JSON.parse(fs.readFileSync(SESSION_STORAGE_FILE, 'utf8'));
-        await context.addCookies(storageState.cookies);
-        console.log("Loaded existing session.");
-    }
-
-    const page = await context.newPage();
-    await page.goto(BASE_URL);
-
-    // Check if session is valid (e.g., look for logout button or dashboard element)
-    if (!(await page.locator('text=Logout').isVisible())) {
-        console.log("Session expired. Logging in...");
-
-        // Perform login
-        await page.fill('input[name="username"]', USERNAME);
+        await page.waitForSelector('input[name="email"]', { timeout: 5000 });
+        await page.fill('input[name="email"]', EMAIL);
         await page.fill('input[name="password"]', PASSWORD);
         await page.click('button[type="submit"]');
 
-        // Wait for navigation
-        await page.waitForSelector('text=Dashboard');
+        await page.waitForURL('**/dashboard', { timeout: 10000 });
+        console.log("✅ Logged in! Current Page:", page.url());
 
-        // Save session storage
-        const cookies = await context.cookies();
-        fs.writeFileSync(SESSION_STORAGE_FILE, JSON.stringify({ cookies }, null, 2));
+        await context.storageState({ path: SESSION_FILE });
     }
 
-    // Navigate to the product data table
-    await page.click('text=Tools');
-    await page.click('text=Data');
-    await page.click('text=Inventory');
-    await page.click('text=Products');
+    const page = await context.newPage();
+    await page.goto(`${BASE_URL}/challenge`);
+    console.log("✅ Navigated to challenge page:", page.url());
 
-    // Wait for table to load
-    await page.waitForSelector('table');
+    // Ensure the table exists before extracting
+    await page.waitForSelector('tbody tr', { timeout: 10000 });
 
     // Extract product data
-    let products = [];
-    let nextPage = true;
+    const products = await page.evaluate(() => {
+        const rows = document.querySelectorAll('tbody tr');  
+        return Array.from(rows).map(row => {
+            const columns = row.querySelectorAll('td');
+            return {
+                id: columns[0]?.innerText.trim(),
+                sku: columns[1]?.innerText.trim(),
+                category: columns[2]?.innerText.trim(),
+                stock: columns[3]?.innerText.trim(),
+                manufacturer: columns[4]?.innerText.trim(),
+                warranty: columns[5]?.innerText.trim(),
+                size: columns[6]?.innerText.trim(),
+                price: columns[7]?.innerText.trim(),
+                item: columns[8]?.innerText.trim()
+            };
+        });
+    });
 
-    while (nextPage) {
-        const rows = await page.$$('table tbody tr');
-        for (let row of rows) {
-            const columns = await row.$$('td');
-            let productData = await Promise.all(columns.map(col => col.innerText()));
-            products.push({
-                id: productData[0],
-                name: productData[1],
-                price: productData[2],
-                stock: productData[3],
-            });
-        }
-
-        // Check for next page button and click if available
-        if (await page.locator('button:has-text("Next")').isVisible()) {
-            await page.click('button:has-text("Next")');
-            await page.waitForTimeout(2000); // Wait for new data to load
-        } else {
-            nextPage = false;
-        }
-    }
-
-    // Save data to JSON
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(products, null, 2));
-    console.log("Product data saved successfully!");
+    fs.writeFileSync('products.json', JSON.stringify(products, null, 2));
+    console.log(`✅ Extracted ${products.length} products and saved to products.json.`);
 
     await browser.close();
 })();
